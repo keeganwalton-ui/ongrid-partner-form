@@ -17,7 +17,17 @@
 
 const NOTION_DBS = {
   partnerForm: 'c3741786ad564070aa0e7d394eca3c40', // Partner Applications
-  savedBuild:  '607a19f209b84e37939fd3e8632ed0cc'  // Saved Builds
+  savedBuild:  'ab079927a6b343d4b3143f85eede5d00'  // 💾 Saved Builds (under OnGrid HQ → Sales & Leads)
+};
+
+// Maps cart-attribute "Protection Plan" values (set in builder.js) to the
+// Notion select options on the Saved Builds DB. Any unknown value defaults to
+// "No Plan" so the API call doesn't 400 on a missing select option.
+const PROTECTION_PLAN_MAP = {
+  'OnGrid Care':  'OnGrid Care',
+  'OnGrid Care+': 'OnGrid Care+',
+  'None':         'No Plan',
+  '':             'No Plan'
 };
 
 exports.handler = async function(event) {
@@ -211,6 +221,8 @@ async function handleSavedBuild(body, corsHeaders) {
   if (wifiNetwork) notesParts.push('WiFi: ' + wifiNetwork);
   const notes = notesParts.join(' | ');
 
+  // Saved At + Last Viewed are auto-computed by Notion (created_time / last_edited_time),
+  // so we don't write them here.
   const properties = {
     'Build Name':      { title:        [{ text: { content: title } }] },
     'Build ID':        { rich_text:    [{ text: { content: buildId } }] },
@@ -220,13 +232,12 @@ async function handleSavedBuild(body, corsHeaders) {
     'Notes':           { rich_text:    [{ text: { content: notes } }] },
     'Room Count':      { number:       (typeof roomCount === 'number' ? roomCount : null) },
     'Total Price':     { number:       (typeof totalPrice === 'number' ? totalPrice : null) },
-    'Saved At':        { date:         { start: nowIso } },
-    'Last Viewed':     { date:         { start: nowIso } },
     'Status':          { select:       { name: 'New' } }
   };
 
   if (protectionPlan) {
-    properties['Protection Plan'] = { select: { name: protectionPlan } };
+    const mappedPlan = PROTECTION_PLAN_MAP[protectionPlan] || 'No Plan';
+    properties['Protection Plan'] = { select: { name: mappedPlan } };
   }
   if (shareUrl && shareUrl.startsWith('http')) {
     properties['Share URL'] = { url: shareUrl };
