@@ -17,7 +17,7 @@
 
 const NOTION_DBS = {
   partnerForm: 'c3741786ad564070aa0e7d394eca3c40', // Partner Applications
-  savedBuild:  'ab079927a6b343d4b3143f85eede5d00'  // 💾 Saved Builds (under OnGrid HQ → Sales & Leads)
+  savedBuild:  'ab079927a6b343d4b3143f85eede5d00'  // Saved Builds (under OnGrid HQ -> Sales & Leads)
 };
 
 // Maps cart-attribute "Protection Plan" values (set in builder.js) to the
@@ -168,33 +168,37 @@ async function handlePartnerForm(body, corsHeaders) {
    SAVED BUILD -- writes to Saved Builds DB from the consumer builder
    -----------------------------------------------------------------
 
-   Expected payload from theme builder.js (saveBuild()):
+   Expected payload from theme builder.js (buildNotionSavePayload()):
 
    {
      form_type:      "savedBuild",
-     email:          "...",                 // required
-     phone:          "...",                 // optional
-     buildName:      "Home name string",    // required (falls back to "Untitled build")
-     buildId:        "ts-randhex",          // required, stable ID
-     homeName:       "Home name string",    // same as buildName
-     deviceSummary:  "2x Hub, 3x Sensor",   // joined device list
-     roomCount:      4,                     // integer
-     totalPrice:     1299.50,               // number
-     protectionPlan: "Standard" | "None" | ...,
-     setupGmail:     "...",                 // optional, packed into Notes
-     wifiNetwork:    "...",                 // optional, packed into Notes
+     customerName:   "First Last",
+     email:          "...",
+     phone:          "...",
+     buildName:      "Home name string",
+     buildId:        "ts-randhex",
+     homeName:       "Home name string",
+     deviceSummary:  "2x Hub, 3x Sensor, ...",
+     roomBreakdown:  [{ room: "Living Room", devices: [{ type: "Smart Bulb", qty: 4, names: ["Couch Light", ...] }] }],
+     roomCount:      4,
+     totalPrice:     1299,
+     protectionPlan: "OnGrid Care" | "None",
+     setupGmail:     "user@gmail.com",
+     wifiNetwork:    "HomeNetwork",
      shareUrl:       "https://ongridsmart.com/cart"
    }
 */
 
 async function handleSavedBuild(body, corsHeaders) {
   const {
+    customerName,
     email,
     phone,
     buildName,
     buildId,
     homeName,
     deviceSummary,
+    roomBreakdown,
     roomCount,
     totalPrice,
     protectionPlan,
@@ -212,7 +216,6 @@ async function handleSavedBuild(body, corsHeaders) {
   }
 
   const NOTION_TOKEN = process.env.NOTION_TOKEN;
-  const nowIso       = new Date().toISOString();
   const title        = (buildName && buildName.trim()) || (homeName && homeName.trim()) || 'Untitled build';
 
   const notesParts = [];
@@ -221,11 +224,10 @@ async function handleSavedBuild(body, corsHeaders) {
   if (wifiNetwork) notesParts.push('WiFi: ' + wifiNetwork);
   const notes = notesParts.join(' | ');
 
-  // Saved At + Last Viewed are auto-computed by Notion (created_time / last_edited_time),
-  // so we don't write them here.
   const properties = {
     'Build Name':      { title:        [{ text: { content: title } }] },
     'Build ID':        { rich_text:    [{ text: { content: buildId } }] },
+    'Customer Name':   { rich_text:    [{ text: { content: customerName || '' } }] },
     'Customer Email':  { email:        email },
     'Devices':         { rich_text:    [{ text: { content: deviceSummary || '' } }] },
     'Home Name':       { rich_text:    [{ text: { content: (homeName || title) } }] },
@@ -243,6 +245,12 @@ async function handleSavedBuild(body, corsHeaders) {
     properties['Share URL'] = { url: shareUrl };
   }
 
+  // Rich page body — full build brief for calling/emailing the lead
+  const pageBlocks = buildNotionPageBody({
+    customerName, email, phone, title, totalPrice, protectionPlan,
+    setupGmail, wifiNetwork, deviceSummary, roomBreakdown, shareUrl
+  });
+
   const notionRes = await fetch('https://api.notion.com/v1/pages', {
     method: 'POST',
     headers: {
@@ -251,8 +259,9 @@ async function handleSavedBuild(body, corsHeaders) {
       'Notion-Version': '2022-06-28'
     },
     body: JSON.stringify({
-      parent: { database_id: NOTION_DBS.savedBuild },
-      properties: properties
+      parent:     { database_id: NOTION_DBS.savedBuild },
+      properties: properties,
+      children:   pageBlocks
     })
   });
 
@@ -277,6 +286,125 @@ async function handleSavedBuild(body, corsHeaders) {
     headers: corsHeaders,
     body: JSON.stringify({ success: true, notion: true, form_type: 'savedBuild' })
   };
+}
+
+/* -----------------------------------------------------------------
+   Build the Notion page body blocks for a saved build.
+   Opens cleanly so you know exactly what to say before calling.
+   ----------------------------------------------------------------- */
+
+function buildNotionPageBody({ customerName, email, phone, title, totalPrice, protectionPlan, setupGmail, wifiNetwork, deviceSummary, roomBreakdown, shareUrl }) {
+  const blocks = [];
+
+  const planLabel = PROTECTION_PLAN_MAP[protectionPlan || ''] || 'No Plan';
+  const totalStr  = (typeof totalPrice === 'number') ? '$' + totalPrice.toLocaleString() : 'Unknown';
+
+  // Contact callout — first thing you see when opening the row
+  const contactLines = [
+    (customerName || 'Unknown name'),
+    'Email: ' + email,
+    phone ? 'Phone: ' + phone : null,
+    'Build total: ' + totalStr,
+    'Protection: ' + planLabel
+  ].filter(Boolean).join('\n');
+
+  blocks.push({
+    object: 'block',
+    type: 'callout',
+    callout: {
+      rich_text: [{ type: 'text', text: { content: contactLines } }],
+      icon:      { type: 'emoji', emoji: '📋' },
+      color:     'blue_background'
+    }
+  });
+
+  // Build name heading
+  blocks.push({
+    object: 'block',
+    type: 'heading_2',
+    heading_2: { rich_text: [{ type: 'text', text: { content: 'Build: ' + title } }] }
+  });
+
+  // Device summary line
+  if (deviceSummary) {
+    blocks.push({
+      object: 'block',
+      type: 'paragraph',
+      paragraph: {
+        rich_text: [{ type: 'text', text: { content: deviceSummary } }]
+      }
+    });
+  }
+
+  // Room-by-room breakdown
+  if (Array.isArray(roomBreakdown) && roomBreakdown.length > 0) {
+    blocks.push({
+      object: 'block',
+      type: 'heading_3',
+      heading_3: { rich_text: [{ type: 'text', text: { content: 'Room Breakdown' } }] }
+    });
+
+    for (const room of roomBreakdown) {
+      const deviceChildren = (room.devices || []).map(function(d) {
+        const nameList  = (d.names || []).filter(Boolean);
+        const deviceLine = d.qty + '\u00D7 ' + d.type + (nameList.length ? ': ' + nameList.join(', ') : '');
+        return {
+          object: 'block',
+          type: 'bulleted_list_item',
+          bulleted_list_item: {
+            rich_text: [{ type: 'text', text: { content: deviceLine } }]
+          }
+        };
+      });
+
+      blocks.push({
+        object: 'block',
+        type: 'bulleted_list_item',
+        bulleted_list_item: {
+          rich_text: [{ type: 'text', text: { content: room.room || 'Unnamed Room' }, annotations: { bold: true } }],
+          children: deviceChildren.length > 0 ? deviceChildren : undefined
+        }
+      });
+    }
+  }
+
+  // Setup info
+  const setupLines = [
+    setupGmail  ? 'Setup Gmail: ' + setupGmail   : null,
+    wifiNetwork ? 'WiFi Network: ' + wifiNetwork  : null
+  ].filter(Boolean);
+
+  if (setupLines.length > 0) {
+    blocks.push({
+      object: 'block',
+      type: 'heading_3',
+      heading_3: { rich_text: [{ type: 'text', text: { content: 'Setup Info' } }] }
+    });
+    blocks.push({
+      object: 'block',
+      type: 'paragraph',
+      paragraph: { rich_text: [{ type: 'text', text: { content: setupLines.join('\n') } }] }
+    });
+  }
+
+  // Divider + share link
+  blocks.push({ object: 'block', type: 'divider', divider: {} });
+
+  if (shareUrl) {
+    blocks.push({
+      object: 'block',
+      type: 'paragraph',
+      paragraph: {
+        rich_text: [
+          { type: 'text', text: { content: 'Share / restore URL: ' } },
+          { type: 'text', text: { content: shareUrl, link: { url: shareUrl } }, annotations: { color: 'blue' } }
+        ]
+      }
+    });
+  }
+
+  // Notion API accepts max 100 blocks per request
+  return blocks.slice(0, 99);
 }
 
 /* -----------------------------------------------------------------
